@@ -6,11 +6,10 @@ use std::marker::PhantomData;
 use std::mem;
 use std::ptr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
 
 use {Poll, Future, Async, Stream, Sink, StartSend, AsyncSink};
 use future::BoxFuture;
+use executor::{Executor2, ThreadExecutor};
 
 mod unpark_mutex;
 use self::unpark_mutex::UnparkMutex;
@@ -77,6 +76,40 @@ fn with<F: FnOnce(&BorrowedTask) -> R, R>(f: F) -> R {
     unsafe {
         f(&*task)
     }
+}
+
+thread_local!(static CURRENT_EXECUTOR: Cell<Option<*const Executor2>> = {
+    Cell::new(None)
+});
+
+pub fn set_executor<'a, F, R>(task: &Executor2, f: F) -> R
+    where F: FnOnce() -> R
+{
+    struct Reset(Option<*const Executor2>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            CURRENT_EXECUTOR.with(|c| c.set(self.0));
+        }
+    }
+
+    CURRENT_EXECUTOR.with(move |c| {
+        let _reset = Reset(c.get());
+        let task = unsafe {
+            mem::transmute::<&Executor2,
+                             *const Executor2>(task)
+        };
+        c.set(Some(task));
+        f()
+    })
+}
+
+fn with_executor<F: FnOnce(&Executor2) -> R, R>(f: F) -> R {
+    CURRENT_EXECUTOR.with(|c| {
+        match c.get() {
+            Some(ptr) => unsafe { f(&*ptr) },
+            None => f(&ThreadExecutor::current()),
+        }
+    })
 }
 
 /// A handle to a "task", which represents a single lightweight "thread" of
@@ -364,15 +397,15 @@ impl<F: Future> Spawn<F> {
     /// to complete. When a future cannot make progress it will use
     /// `thread::park` to block the current thread.
     pub fn wait_future(&mut self) -> Result<F::Item, F::Error> {
-        let unpark = Arc::new(ThreadUnpark::new(thread::current()));
-        let unpark2 = NotifyHandle::from(unpark.clone());
-
-        loop {
-            match try!(self.poll_future_notify(&unpark2, 0)) {
-                Async::NotReady => unpark.park(),
-                Async::Ready(e) => return Ok(e),
+        with_executor(|ex| {
+            loop {
+                let (notify, id) = ex.notify();
+                match try!(self.poll_future_notify(notify, id)) {
+                    Async::NotReady => ex.block(),
+                    Async::Ready(e) => return Ok(e),
+                }
             }
-        }
+        })
     }
 
     /// A specialized function to request running a future to completion on the
@@ -427,17 +460,17 @@ impl<S: Stream> Spawn<S> {
     /// Like `wait_future`, except only waits for the next element to arrive on
     /// the underlying stream.
     pub fn wait_stream(&mut self) -> Option<Result<S::Item, S::Error>> {
-        let unpark = Arc::new(ThreadUnpark::new(thread::current()));
-        let unpark2 = NotifyHandle::from(unpark.clone());
-
-        loop {
-            match self.poll_stream_notify(&unpark2, 0) {
-                Ok(Async::NotReady) => unpark.park(),
-                Ok(Async::Ready(Some(e))) => return Some(Ok(e)),
-                Ok(Async::Ready(None)) => return None,
-                Err(e) => return Some(Err(e)),
+        with_executor(|ex| {
+            loop {
+                let (notify, id) = ex.notify();
+                match self.poll_stream_notify(notify, id) {
+                    Ok(Async::NotReady) => ex.block(),
+                    Ok(Async::Ready(Some(e))) => return Some(Ok(e)),
+                    Ok(Async::Ready(None)) => return None,
+                    Err(e) => return Some(Err(e)),
+                }
             }
-        }
+        })
     }
 }
 
@@ -498,15 +531,16 @@ impl<S: Sink> Spawn<S> {
     /// be blocked until it's able to send the value.
     pub fn wait_send(&mut self, mut value: S::SinkItem)
                      -> Result<(), S::SinkError> {
-        let notify = Arc::new(ThreadUnpark::new(thread::current()));
-        let notify2 = NotifyHandle::from(notify.clone());
-        loop {
-            value = match try!(self.start_send_notify(value, &notify2, 0)) {
-                AsyncSink::NotReady(v) => v,
-                AsyncSink::Ready => return Ok(()),
-            };
-            notify.park();
-        }
+        with_executor(|ex| {
+            loop {
+                let (notify, id) = ex.notify();
+                value = match try!(self.start_send_notify(value, notify, id)) {
+                    AsyncSink::NotReady(v) => v,
+                    AsyncSink::Ready => return Ok(()),
+                };
+                ex.block()
+            }
+        })
     }
 
     /// Blocks the current thread until it's able to flush this sink.
@@ -518,14 +552,15 @@ impl<S: Sink> Spawn<S> {
     /// The thread will be blocked until `poll_complete` returns that it's
     /// ready.
     pub fn wait_flush(&mut self) -> Result<(), S::SinkError> {
-        let notify = Arc::new(ThreadUnpark::new(thread::current()));
-        let notify2 = NotifyHandle::from(notify.clone());
-        loop {
-            if try!(self.poll_flush_notify(&notify2, 0)).is_ready() {
-                return Ok(())
+        with_executor(|ex| {
+            loop {
+                let (notify, id) = ex.notify();
+                if try!(self.poll_flush_notify(notify, id)).is_ready() {
+                    return Ok(())
+                }
+                ex.block()
             }
-            notify.park();
-        }
+        })
     }
 }
 
@@ -774,35 +809,6 @@ impl<T: Notify> Notify for NotifyContextInner<T> {
     fn notify(&self, unpark_id: u64) {
         self.obj.notify(unpark_id);
         self.parent.notify();
-    }
-}
-
-// ===== ThreadUnpark =====
-
-struct ThreadUnpark {
-    thread: thread::Thread,
-    ready: AtomicBool,
-}
-
-impl ThreadUnpark {
-    fn new(thread: thread::Thread) -> ThreadUnpark {
-        ThreadUnpark {
-            thread: thread,
-            ready: AtomicBool::new(false),
-        }
-    }
-
-    fn park(&self) {
-        if !self.ready.swap(false, Ordering::SeqCst) {
-            thread::park();
-        }
-    }
-}
-
-impl Notify for ThreadUnpark {
-    fn notify(&self, _unpark_id: u64) {
-        self.ready.store(true, Ordering::SeqCst);
-        self.thread.unpark()
     }
 }
 
