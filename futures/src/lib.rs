@@ -58,7 +58,14 @@ compile_error!("The `never-type` feature requires the `nightly` feature as an ex
 #[cfg(feature = "std")]
 #[doc(hidden)] pub use futures_io::{AsyncRead, AsyncWrite, AsyncSeek, AsyncBufRead};
 #[cfg(feature = "std")]
-#[doc(hidden)] pub use futures_util::{AsyncReadExt, AsyncWriteExt, AsyncSeekExt, AsyncBufReadExt};
+#[doc(hidden)]
+pub use futures_util::{
+    AsyncReadExt,
+    AsyncWriteExt,
+    AsyncSeekExt,
+    AsyncBufReadExt,
+    OptionExt,
+};
 
 #[doc(hidden)] pub use futures_core::task::Poll;
 
