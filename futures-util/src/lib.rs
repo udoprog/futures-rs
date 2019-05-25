@@ -110,5 +110,4 @@ cfg_target_has_atomic! {
 }
 
 pub mod option;
-#[doc(hidden)]
-pub use crate::option::OptionExt;
+#[doc(hidden)] pub use crate::option::OptionExt;
