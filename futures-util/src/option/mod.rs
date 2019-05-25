@@ -38,7 +38,7 @@
 //!         v = values.next() => {
 //!             match v {
 //!                 Some(v) => {
-//!                     value = Some(async move { v });
+//!                     value = Some(future::ready(v));
 //!                     std::mem::swap(&mut parked, &mut values);
 //!                 },
 //!                 None => break,
@@ -65,14 +65,14 @@ use futures_core::{
 impl<T> OptionExt<T> for Option<T> {
     fn next(&mut self) -> Next<'_, T>
     where
-        T: Stream,
+        T: Stream + Unpin,
     {
         Next { stream: self }
     }
 
     fn current(&mut self) -> Current<'_, T>
     where
-        T: Future,
+        T: Future + Unpin,
     {
         Current { future: self }
     }
@@ -93,7 +93,7 @@ pub trait OptionExt<T>: Sized {
     /// [`Stream`]: Stream
     fn next(&mut self) -> Next<'_, T>
     where
-        T: Stream;
+        T: Stream + Unpin;
 
     /// Convert [`Option`] into a Future that resolves to the same value as the stored [`Future`].
     ///
@@ -104,7 +104,7 @@ pub trait OptionExt<T>: Sized {
     /// [`Future`]: Future
     fn current(&mut self) -> Current<'_, T>
     where
-        T: Future;
+        T: Future + Unpin;
 }
 
 /// Adapter future for `Option` to get the next value of the stored future.
@@ -115,15 +115,9 @@ pub struct Next<'a, T> {
     pub(crate) stream: &'a mut Option<T>,
 }
 
-impl<'a, T> Next<'a, T> {
-    fn stream<'b>(self: Pin<&'b mut Self>) -> Pin<&'b mut Option<T>> {
-        unsafe { Pin::map_unchecked_mut(self, |x| x.stream) }
-    }
-}
-
 impl<'a, T> Future for Next<'a, T>
 where
-    T: Stream,
+    T: Stream + Unpin,
 {
     type Output = Option<T::Item>;
 
@@ -131,9 +125,9 @@ where
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Self::Output> {
-        Poll::Ready(match Option::as_pin_mut(self.as_mut().stream()) {
-            Some(stream) => {
-                match ready!(stream.poll_next(cx)) {
+        Poll::Ready(match *self.stream {
+            Some(ref mut stream) => {
+                match ready!(Pin::new(stream).poll_next(cx)) {
                     Some(result) => Some(result),
                     None => {
                         // NB: we do this to mark the stream as terminated.
@@ -161,15 +155,9 @@ pub struct Current<'a, T> {
     pub(crate) future: &'a mut Option<T>,
 }
 
-impl<'a, T> Current<'a, T> {
-    fn future<'b>(self: Pin<&'b mut Self>) -> Pin<&'b mut Option<T>> {
-        unsafe { Pin::map_unchecked_mut(self, |x| x.future) }
-    }
-}
-
 impl<'a, T> Future for Current<'a, T>
 where
-    T: Future,
+    T: Future + Unpin,
 {
     type Output = T::Output;
 
@@ -177,9 +165,8 @@ where
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Self::Output> {
-        let future = Option::as_pin_mut(self.as_mut().future())
-            .expect("poll on terminated future");
-        let result = ready!(future.poll(cx));
+        let future = self.future.as_mut().expect("poll on terminated future");
+        let result = ready!(Pin::new(future).poll(cx));
         // NB: we do this to mark the future as terminated.
         *self.future = None;
         Poll::Ready(result)
