@@ -1,5 +1,5 @@
 use futures::channel::oneshot;
-use futures::executor::{block_on, block_on_stream};
+use futures::executor::block_on_stream;
 use futures::future::{self, join, Future, FutureExt, TryFutureExt};
 use futures::stream::{StreamExt, FuturesOrdered};
 use futures_test::task::noop_context;
@@ -23,7 +23,10 @@ fn works_1() {
     assert_eq!(Some(Ok(33)), iter.next());
     assert_eq!(Some(Ok(99)), iter.next());
     assert_eq!(Some(Ok(33)), iter.next());
-    assert_eq!(None, iter.next());
+    assert!(iter.poll_next_unpin(&mut noop_context()).is_pending());
+
+    // NB: calling this would block forever.
+    // assert_eq!(None, iter.next());
 }
 
 #[test]
@@ -54,7 +57,9 @@ fn from_iterator() {
         future::ready::<i32>(3)
     ].into_iter().collect::<FuturesOrdered<_>>();
     assert_eq!(stream.len(), 3);
-    assert_eq!(block_on(stream.collect::<Vec<_>>()), vec![1,2,3]);
+
+    // NB: calling this would block forever.
+    // assert_eq!(block_on(stream.collect::<Vec<_>>()), vec![1,2,3]);
 }
 
 #[test]

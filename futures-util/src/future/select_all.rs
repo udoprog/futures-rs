@@ -37,7 +37,7 @@ pub fn select_all<I>(iter: I) -> SelectAll<I::Item>
     let ret = SelectAll {
         inner: iter.into_iter().collect()
     };
-    assert!(!ret.inner.is_empty());
+
     ret
 }
 

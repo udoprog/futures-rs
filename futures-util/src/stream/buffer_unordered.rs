@@ -114,10 +114,12 @@ where
             }
         }
 
-        // Attempt to pull the next value from the in_progress_queue
-        match self.as_mut().in_progress_queue().poll_next_unpin(cx) {
-            x @ Poll::Pending | x @ Poll::Ready(Some(_)) => return x,
-            Poll::Ready(None) => {}
+        if !self.in_progress_queue.is_empty() {
+            // Attempt to pull the next value from the in_progress_queue
+            match self.as_mut().in_progress_queue().poll_next_unpin(cx) {
+                x @ Poll::Pending | x @ Poll::Ready(Some(_)) => return x,
+                Poll::Ready(None) => {}
+            }
         }
 
         // If more values are still coming from the stream, we're not done yet

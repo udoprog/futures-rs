@@ -273,6 +273,11 @@ impl LocalPool {
             }
         }
 
+        // NB: emulate old behavior.
+        if self.pool.is_empty() {
+            return Poll::Ready(None);
+        }
+
         // try to execute the next ready future
         self.pool.poll_next_unpin(cx)
     }

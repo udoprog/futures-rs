@@ -1,5 +1,5 @@
 use futures::channel::oneshot;
-use futures::executor::{block_on, block_on_stream};
+use futures::executor::block_on_stream;
 use futures::future::{self, join, Future, FutureExt};
 use futures::stream::{FusedStream, FuturesUnordered, StreamExt};
 use futures::task::Poll;
@@ -12,8 +12,8 @@ fn is_terminated() {
     let mut cx = noop_context();
     let mut tasks = FuturesUnordered::new();
 
-    assert_eq!(tasks.is_terminated(), false);
-    assert_eq!(tasks.poll_next_unpin(&mut cx), Poll::Ready(None));
+    assert_eq!(tasks.is_terminated(), true);
+    assert_eq!(tasks.poll_next_unpin(&mut cx), Poll::Pending);
     assert_eq!(tasks.is_terminated(), true);
 
     // Test that the sentinel value doesn't leak
@@ -29,8 +29,8 @@ fn is_terminated() {
 
     assert_eq!(tasks.is_terminated(), false);
     assert_eq!(tasks.poll_next_unpin(&mut cx), Poll::Ready(Some(1)));
-    assert_eq!(tasks.is_terminated(), false);
-    assert_eq!(tasks.poll_next_unpin(&mut cx), Poll::Ready(None));
+    assert_eq!(tasks.is_terminated(), true);
+    assert_eq!(tasks.poll_next_unpin(&mut cx), Poll::Pending);
     assert_eq!(tasks.is_terminated(), true);
 }
 
@@ -53,7 +53,9 @@ fn works_1() {
     c_tx.send(33).unwrap();
     assert_eq!(Some(Ok(33)), iter.next());
     assert_eq!(Some(Ok(33)), iter.next());
-    assert_eq!(None, iter.next());
+
+    // NB: calling this would block forever.
+    // assert_eq!(None, iter.next());
 }
 
 #[test]
@@ -76,7 +78,7 @@ fn works_2() {
     assert_eq!(stream.poll_next_unpin(&mut cx), Poll::Ready(Some(Ok(9))));
     c_tx.send(20).unwrap();
     assert_eq!(stream.poll_next_unpin(&mut cx), Poll::Ready(Some(Ok(30))));
-    assert_eq!(stream.poll_next_unpin(&mut cx), Poll::Ready(None));
+    assert!(stream.poll_next_unpin(&mut cx).is_pending());
 }
 
 #[test]
@@ -89,7 +91,9 @@ fn from_iterator() {
     .into_iter()
     .collect::<FuturesUnordered<_>>();
     assert_eq!(stream.len(), 3);
-    assert_eq!(block_on(stream.collect::<Vec<_>>()), vec![1, 2, 3]);
+
+    // NB: calling this would block forever.
+    // assert_eq!(block_on(stream.collect::<Vec<_>>()), vec![1, 2, 3]);
 }
 
 #[test]
@@ -140,7 +144,9 @@ fn iter_mut_cancel() {
     assert_eq!(iter.next(), Some(Err(futures::channel::oneshot::Canceled)));
     assert_eq!(iter.next(), Some(Err(futures::channel::oneshot::Canceled)));
     assert_eq!(iter.next(), Some(Err(futures::channel::oneshot::Canceled)));
-    assert_eq!(iter.next(), None);
+
+    // NB: calling this would block.
+    // assert_eq!(iter.next(), None);
 }
 
 #[test]
@@ -173,5 +179,6 @@ fn futures_not_moved_after_poll() {
     assert_stream_next!(stream, ());
     assert_stream_next!(stream, ());
     assert_stream_next!(stream, ());
-    assert_stream_done!(stream);
+    // NB: stream never completes.
+    // assert_stream_done!(stream);
 }

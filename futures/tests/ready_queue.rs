@@ -146,6 +146,6 @@ fn panicking_future_dropped() {
         let r = panic::catch_unwind(AssertUnwindSafe(|| queue.poll_next_unpin(cx)));
         assert!(r.is_err());
         assert!(queue.is_empty());
-        assert_eq!(Poll::Ready(None), queue.poll_next_unpin(cx));
+        assert_eq!(Poll::Pending, queue.poll_next_unpin(cx));
     }));
 }
